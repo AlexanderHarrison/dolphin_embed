@@ -1,23 +1,41 @@
 #include "libretro.h"
 
-#include <dlfcn.h>
+#include <raylib.h>
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <signal.h>
 
 typedef uint64_t U64;
 typedef int64_t I64;
 typedef uint8_t U8;
 
-// CORE LOADING ############################################################################################
+// #define CTX RETRO_HW_CONTEXT_VULKAN
+#define CTX RETRO_HW_CONTEXT_VULKAN
+
+// GLOBALS ######################################################################
+
+enum retro_pixel_format video_format = RETRO_PIXEL_FORMAT_UNKNOWN;
+
+// CORE LOADING #################################################################
 // taken from https://github.com/davidgfnet/miniretro
 
-#define LIBHANDLE void*
-#define LOAD_LIBRARY(path) dlopen(path, RTLD_LAZY | RTLD_LOCAL)
-#define UNLOAD_LIBRARY(lib) dlclose(lib)
-#define LOAD_SYMBOL(lib, name) dlsym(lib, name)
+#ifdef WIN32
+  #include <windows.h>
+  #define LIBHANDLE HMODULE
+  #define LOAD_LIBRARY(path) LoadLibraryA(path)
+  #define UNLOAD_LIBRARY(lib) FreeLibrary(lib)
+  #define LOAD_SYMBOL(lib, name) GetProcAddress(lib, name)
+#else
+  #include <dlfcn.h>
+  #define LIBHANDLE void*
+  #define LOAD_LIBRARY(path) dlopen(path, RTLD_LAZY | RTLD_LOCAL)
+  #define UNLOAD_LIBRARY(lib) dlclose(lib)
+  #define LOAD_SYMBOL(lib, name) dlsym(lib, name)
+#endif
 
 typedef RETRO_CALLCONV void (*core_info_fnt)(struct retro_system_info *info);
 typedef RETRO_CALLCONV void (*core_action_fnt)(void);
@@ -104,11 +122,12 @@ bool RETRO_CALLCONV env_callback(unsigned cmd, void *data) {
     switch (cmd) {
     case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
         printf("env set format %u\n", *(enum retro_pixel_format*)data);
+        video_format = *(enum retro_pixel_format*)data;
         return true;
     case RETRO_ENVIRONMENT_GET_VARIABLE:
         return false;
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
-        *((const char**)data) = "/home/alex/.config/Slippi Launcher/playback/Sys/";
+        *((const char**)data) = "/home/alex/melee/tutor/emu_embed";
         return true;
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
         *((const char**)data) = "/home/alex/melee/tutor/emu_embed/data";
@@ -122,15 +141,51 @@ bool RETRO_CALLCONV env_callback(unsigned cmd, void *data) {
     case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
         ((struct retro_log_callback*)data)->log = &logging_callback;
         return true;
+    case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
+        *((enum retro_hw_context_type *)data) = CTX;
+        return false;
+    case RETRO_ENVIRONMENT_SET_HW_RENDER:
+        if (data == NULL) return false;
+        struct retro_hw_render_callback *i = data;
+        if (i->context_type != CTX) return false;
+        i->version_major = 1;
+        i->version_minor = 0;
+        i->context_reset = NULL;
+        i->get_current_framebuffer = NULL;
+        i->get_proc_address = NULL;
+        i->depth = false;
+        i->stencil = false;
+        i->bottom_left_origin = false;
+        i->cache_context = true;
+        i->context_destroy = NULL;
+        i->debug_context = NULL;
+        return true;
+    case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE:
+        return false;
     default:
+        printf("unhandled cmd %u\n", cmd);
         return false;
     }
 }
 
 void RETRO_CALLCONV video_update(const void *data, unsigned width, unsigned height, size_t pitch) {
-    if (data == NULL) return;
+    printf("video update\n");
+    (void)pitch;
 
-    printf("received frame w:%u h:%u pitch:%lu\n", width, height, pitch);
+    //if (data == NULL) return;
+    //Image image = {
+    //    .data = data,
+    //    .width = (int)width,
+    //    .height = (int)height,
+    //    .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+    //    .mipmaps = 1
+    //};
+    //Texture2D tex = LoadTextureFromImage(image);
+
+    BeginDrawing();
+    ClearBackground(WHITE);
+    //DrawTexture(tex, 0, 0, WHITE);
+    EndDrawing();
 }
 
 // main ###########################################################################
@@ -158,20 +213,26 @@ Bytes read_file(const char* path) {
     };
 }
 
+void alarmhandler(int signal) { (void)signal; exit(1); }
+
 int main(void) {
+    SetTraceLogLevel(LOG_WARNING);
+    InitWindow(640, 480, "dolphin");
+    SetTargetFPS(60);
+
     core_functions_t *core = load_core("./libdolphin.so");
     assert(core != NULL);
 
     core->core_set_env_function(&env_callback);
     core->core_set_video_refresh_function(&video_update);
-    //core->core_set_audio_sample_function(&single_sample);
-    //core->core_set_audio_sample_batch_function(&audio_buffer);
-    //core->core_set_input_poll_function(&input_poll);
-    //core->core_set_input_state_function(&input_state);
+    core->core_set_audio_sample_function(NULL);
+    core->core_set_audio_sample_batch_function(NULL);
+    core->core_set_input_poll_function(NULL);
+    core->core_set_input_state_function(NULL);
 
     core->core_init();
 
-    const char *path =  "/home/alex/melee/melee_vanilla.iso";
+    const char *path = "/home/alex/melee/melee_vanilla.iso";
     Bytes iso = read_file(path);
     assert(iso.ptr);
 
@@ -183,9 +244,16 @@ int main(void) {
     };
     assert(core->core_load_game(&gameinfo));
 
+    while (!WindowShouldClose()) {
+        core->core_run();
+        printf("frame\n");
+    }
+
     //core->core_unload_game();
     //core->core_deinit();
     //unload_core(core);
+
+    //CloseWindow();
 
     return 0;
 }

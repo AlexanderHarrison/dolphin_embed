@@ -1,23 +1,32 @@
 #include "libretro.h"
 
-#include <dlfcn.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdarg.h>
 
-typedef uint64_t U64;
-typedef int64_t I64;
-typedef uint8_t U8;
-
 // CORE LOADING ############################################################################################
 // taken from https://github.com/davidgfnet/miniretro
 
-#define LIBHANDLE void*
-#define LOAD_LIBRARY(path) dlopen(path, RTLD_LAZY | RTLD_LOCAL)
-#define UNLOAD_LIBRARY(lib) dlclose(lib)
-#define LOAD_SYMBOL(lib, name) dlsym(lib, name)
+#ifdef _WIN32
+  #include <windows.h>
+  #include <strsafe.h>
+  #define LIBHANDLE HMODULE
+  #define LOAD_LIBRARY(path) LoadLibraryA(path)
+  #define UNLOAD_LIBRARY(lib) FreeLibrary(lib)
+  #define LOAD_SYMBOL(lib, name) GetProcAddress(lib, name)
+#else
+  #include <dlfcn.h>
+  #define LIBHANDLE void*
+  #define LOAD_LIBRARY(path) dlopen(path, RTLD_LAZY | RTLD_LOCAL)
+  #define UNLOAD_LIBRARY(lib) dlclose(lib)
+  #define LOAD_SYMBOL(lib, name) dlsym(lib, name)
+#endif
+
+typedef uint64_t U64;
+typedef int64_t I64;
+typedef uint8_t U8;
 
 typedef RETRO_CALLCONV void (*core_info_fnt)(struct retro_system_info *info);
 typedef RETRO_CALLCONV void (*core_action_fnt)(void);
@@ -58,8 +67,10 @@ typedef struct {
 
 core_functions_t *load_core(const char *filename) {
     LIBHANDLE libhandle = LOAD_LIBRARY(filename);
-    if (!libhandle)
+    if (!libhandle) {
+        fprintf(stderr, "ERROR: failed to load library: %s\n", GetLastError());
         return NULL;
+    }
 
     core_functions_t *fns = malloc(sizeof(core_functions_t));
     
@@ -159,7 +170,17 @@ Bytes read_file(const char* path) {
 }
 
 int main(void) {
-    core_functions_t *core = load_core("./libdolphin.so");
+#ifdef _WIN32
+    const char *core_path = "C:\\Users\\Alex\\Documents\\Melee\\dolphin_embed\\libdolphin.dll";
+    const char *iso_path =  "C:\\Users\\Alex\\Documents\\Melee\\melee vanilla.iso";
+#else
+    const char *core_path = "./libdolphin.so";
+    const char *iso_path =  "/home/alex/melee/melee_vanilla.iso";
+#endif
+
+    printf("loading core '%s'\n", core_path);
+
+    core_functions_t *core = load_core(core_path);
     assert(core != NULL);
 
     core->core_set_env_function(&env_callback);
@@ -171,21 +192,24 @@ int main(void) {
 
     core->core_init();
 
-    const char *path =  "/home/alex/melee/melee_vanilla.iso";
-    Bytes iso = read_file(path);
+    Bytes iso = read_file(iso_path);
     assert(iso.ptr);
 
     struct retro_game_info gameinfo = {
-        .path = path,
+        .path = iso_path,
         .data = iso.ptr, 
         .size = iso.size, 
         .meta = NULL
     };
     assert(core->core_load_game(&gameinfo));
 
-    //core->core_unload_game();
-    //core->core_deinit();
-    //unload_core(core);
+    while (!WindowShouldClose()) {
+        core->core_run();
+    }
+
+    core->core_unload_game();
+    core->core_deinit();
+    unload_core(core);
 
     return 0;
 }
